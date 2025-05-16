@@ -1,0 +1,13 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "SqlDatabaseConnectionString": "your_sql_server_connection_string",
+    "ServiceBus:ConnectionString": "your_azure_service_bus_connection_string",
+    "ServiceBus:DefaultTopicOrQueueName": "ordersevents",
+    "OutboxPollSchedule": "*/30 * * * * *",
+    "OutboxBatchSize": "10",
+    "OutboxMaxRetries": "5"
+  }
+} 

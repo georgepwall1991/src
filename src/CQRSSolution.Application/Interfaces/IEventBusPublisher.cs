@@ -1,16 +1,18 @@
-namespace CQRSSolution.Application.Interfaces;
+using System;
+using System.Threading;
+using System.Threading.Tasks;
 
-/// <summary>
-///     Defines the contract for an event bus publisher.
-/// </summary>
-public interface IEventBusPublisher
+namespace CQRSSolution.Application.Interfaces
 {
-    /// <summary>
-    ///     Publishes an event to the event bus.
-    /// </summary>
-    /// <param name="event">The event object to publish.</param>
-    /// <param name="eventType">The fully qualified name of the event type, used for routing or topic selection.</param>
-    /// <param name="cancellationToken">A token to cancel the operation.</param>
-    /// <returns>A task representing the asynchronous operation.</returns>
-    Task PublishAsync(object @event, string eventType, CancellationToken cancellationToken = default);
-}
+    public interface IEventBusPublisher
+    {
+        /// <summary>
+        /// Publishes an event to the event bus.
+        /// </summary>
+        /// <param name="eventData">The event data object.</param>
+        /// <param name="eventTypeFullName">The full name of the event type.</param>
+        /// <param name="messageId">A unique message ID, typically the OutboxMessage.Id, used for bus-level deduplication and correlation.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        Task PublishAsync(object eventData, string eventTypeFullName, Guid messageId, CancellationToken cancellationToken = default);
+    }
+} 

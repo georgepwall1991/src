@@ -59,7 +59,7 @@ public class AzureServiceBusPublisher : IEventBusPublisher, IAsyncDisposable
         GC.SuppressFinalize(this);
     }
 
-    public async Task PublishAsync(object @event, string eventType, CancellationToken cancellationToken = default)
+    public async Task PublishAsync(object eventData, string eventType, Guid messageId, CancellationToken cancellationToken = default)
     {
         if (_serviceBusSender == null || _serviceBusClient == null || string.IsNullOrWhiteSpace(_queueName))
         {
@@ -71,7 +71,7 @@ public class AzureServiceBusPublisher : IEventBusPublisher, IAsyncDisposable
 
         try
         {
-            var eventJson = JsonSerializer.Serialize(@event, _jsonSerializerOptions);
+            var eventJson = JsonSerializer.Serialize(@eventData, _jsonSerializerOptions);
             var message = new ServiceBusMessage(eventJson)
             {
                 ContentType = "application/json",
@@ -93,5 +93,10 @@ public class AzureServiceBusPublisher : IEventBusPublisher, IAsyncDisposable
                 eventType, _queueName);
             throw; // Re-throw to allow OutboxProcessorService to handle retry/failure logic
         }
+    }
+
+    public Task PublishAsync(object eventData, Type eventType, string messageId, CancellationToken cancellationToken = default)
+    {
+        throw new NotImplementedException();
     }
 }

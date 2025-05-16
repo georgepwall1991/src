@@ -101,7 +101,7 @@ public class OutboxProcessorService : IHostedService, IDisposable
                     continue;
                 }
 
-                await _eventBusPublisher.PublishAsync(domainEvent, message.Type, stoppingToken);
+                await _eventBusPublisher.PublishAsync(message.Payload, message.Type, message.Id, stoppingToken);
                 message.ProcessedOnUtc = DateTime.UtcNow;
                 message.Error = null; // Clear any previous error
             }

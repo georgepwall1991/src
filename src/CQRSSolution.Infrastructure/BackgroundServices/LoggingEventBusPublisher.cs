@@ -12,10 +12,9 @@ public class LoggingEventBusPublisher : IEventBusPublisher
         _logger = logger;
     }
 
-    public Task PublishAsync(object @event, string eventType, CancellationToken cancellationToken = default)
+    public Task PublishAsync(object eventData, string eventTypeFullName, Guid messageId, CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Simulating event publication to event bus. Event Type: {EventType}, Event: {@Event}",
-            eventType, @event);
+        _logger.LogInformation("Simulating event publication to event bus. Event Type: {EventType}, Event: {@Event}", eventTypeFullName, eventData);
         // In a real implementation, this would send the event to Azure Service Bus / RabbitMQ etc.
         return Task.CompletedTask;
     }
