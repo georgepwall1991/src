@@ -1,38 +1,29 @@
-using CQRSSolution.Application.DTOs;
 using MediatR;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using CQRSSolution.Application.DTOs; // For CreateOrderItemDto
 
 namespace CQRSSolution.Application.Commands.CreateOrder;
 
 /// <summary>
-///     Command to create a new order. Requires customer name and email to find or create a customer record.
+/// Command to create a new order.
+/// Returns the ID of the newly created order.
 /// </summary>
 public class CreateOrderCommand : IRequest<Guid>
 {
     /// <summary>
-    ///     Initializes a new instance of the <see cref="CreateOrderCommand" /> class.
+    /// Gets or sets the name of the customer placing the order.
     /// </summary>
-    /// <param name="customerName">The customer name.</param>
-    /// <param name="customerEmail">The customer email.</param>
-    /// <param name="items">The list of order items.</param>
-    public CreateOrderCommand(string customerName, string customerEmail, List<OrderItemDto> items)
-    {
-        CustomerName = customerName;
-        CustomerEmail = customerEmail;
-        Items = items;
-    }
+    [Required(ErrorMessage = "Customer name is required.")]
+    [MaxLength(200, ErrorMessage = "Customer name cannot exceed 200 characters.")]
+    public string CustomerName { get; set; } = string.Empty;
 
     /// <summary>
-    ///     Gets or sets the customer's name.
+    /// Gets or sets the list of items to be included in the order.
+    /// Must contain at least one item.
     /// </summary>
-    public string CustomerName { get; set; }
-
-    /// <summary>
-    ///     Gets or sets the customer's email address. Used to find an existing customer or create a new one.
-    /// </summary>
-    public string CustomerEmail { get; set; }
-
-    /// <summary>
-    ///     Gets or sets the list of items for the order.
-    /// </summary>
-    public List<OrderItemDto> Items { get; set; } = new();
+    [Required(ErrorMessage = "Order items are required.")]
+    [MinLength(1, ErrorMessage = "Order must contain at least one item.")]
+    public List<CreateOrderItemDto> Items { get; set; } = new List<CreateOrderItemDto>();
 }

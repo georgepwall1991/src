@@ -1,9 +1,13 @@
-using CQRSSolution.Application.Factories;
-using CQRSSolution.Application.Interfaces;
-using CQRSSolution.Domain.DomainEvents;
-using CQRSSolution.Domain.Entities;
 using MediatR;
+using System;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using CQRSSolution.Application.Interfaces;
+using CQRSSolution.Domain.Entities;
+using CQRSSolution.Domain.DomainEvents;
 using Microsoft.Extensions.Logging;
+using System.Linq; // Required for .Any() and .Sum()
 
 namespace CQRSSolution.Application.Commands.CreateOrder;
 
@@ -15,28 +19,24 @@ namespace CQRSSolution.Application.Commands.CreateOrder;
 /// </summary>
 public class CreateOrderCommandHandler : IRequestHandler<CreateOrderCommand, Guid>
 {
+    private readonly IApplicationDbContext _dbContext;
     private readonly ILogger<CreateOrderCommandHandler> _logger;
-    private readonly IOrderFactory _orderFactory;
-    private readonly IOutboxMessageFactory _outboxMessageFactory;
-    private readonly IUnitOfWork _unitOfWork;
+    private readonly JsonSerializerOptions _jsonSerializerOptions;
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="CreateOrderCommandHandler" /> class.
     /// </summary>
-    /// <param name="unitOfWork">The unit of work for managing database operations and transactions.</param>
-    /// <param name="orderFactory">The factory for creating <see cref="Order" /> instances.</param>
-    /// <param name="outboxMessageFactory">The factory for creating <see cref="OutboxMessage" /> instances.</param>
-    /// <param name="logger">The logger for this handler.</param>
-    public CreateOrderCommandHandler(
-        IUnitOfWork unitOfWork,
-        IOrderFactory orderFactory,
-        IOutboxMessageFactory outboxMessageFactory,
-        ILogger<CreateOrderCommandHandler> logger)
+    /// <param name="dbContext">The application database context.</param>
+    /// <param name="logger">The logger.</param>
+    public CreateOrderCommandHandler(IApplicationDbContext dbContext, ILogger<CreateOrderCommandHandler> logger)
     {
-        _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
-        _orderFactory = orderFactory ?? throw new ArgumentNullException(nameof(orderFactory));
-        _outboxMessageFactory = outboxMessageFactory ?? throw new ArgumentNullException(nameof(outboxMessageFactory));
+        _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _jsonSerializerOptions = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = false // Compact JSON for storage
+        };
     }
 
     /// <summary>
@@ -49,70 +49,60 @@ public class CreateOrderCommandHandler : IRequestHandler<CreateOrderCommand, Gui
     /// <exception cref="Exception">Rethrows exceptions from database operations after attempting a rollback.</exception>
     public async Task<Guid> Handle(CreateOrderCommand command, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Processing CreateOrderCommand for customer email: {CustomerEmail}", command.CustomerEmail);
+        if (command == null) throw new ArgumentNullException(nameof(command));
+        if (string.IsNullOrWhiteSpace(command.CustomerName))
+            throw new ArgumentException("Customer name is required.", nameof(command.CustomerName));
+        if (command.Items == null || !command.Items.Any())
+            throw new ArgumentException("Order must contain at least one item.", nameof(command.Items));
 
-        await _unitOfWork.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
 
         try
         {
-            var customer = await _unitOfWork.Customers.GetByEmailAsync(command.CustomerEmail, cancellationToken);
-
-            if (customer == null)
+            var order = new Order
             {
-                _logger.LogInformation("Customer with email {CustomerEmail} not found for CreateOrderCommand. Creating new customer.", command.CustomerEmail);
-                
-                customer = Customer.Create(command.CustomerName, command.CustomerEmail);
-                
-                await _unitOfWork.Customers.AddAsync(customer, cancellationToken);
-            }
+                CustomerName = command.CustomerName,
+                // OrderDate, Status, and Id are set in Order constructor
+            };
 
-            else
+            foreach (var itemDto in command.Items)
             {
-                _logger.LogInformation("Existing customer {CustomerId} (Email: {CustomerEmail}) found for CreateOrderCommand.", customer.CustomerId, customer.Email);
+                // OrderItem constructor performs its own validation for ProductName, quantity, and unit price.
+                order.AddOrderItem(itemDto.ProductName, itemDto.Quantity, itemDto.UnitPrice);
             }
+            // TotalAmount is calculated by AddOrderItem and RecalculateTotalAmount
 
-            var order = _orderFactory.CreateNewOrder(customer, command.Items);
-            
-            await _unitOfWork.Orders.AddAsync(order, cancellationToken);
+            _dbContext.Orders.Add(order);
+            // OrderItems are implicitly added by EF Core as they are part of the Order.OrderItems collection
+            // and Order is being added.
 
             var orderCreatedEvent = new OrderCreatedDomainEvent(
-                order.OrderId,
-                customer.Name,
-                order.OrderDate);
+                order.Id,
+                order.CustomerName,
+                order.TotalAmount,
+                order.OrderDate
+            );
 
-            var outboxMessage = _outboxMessageFactory.CreateFromDomainEvent(orderCreatedEvent);
-            
-            await _unitOfWork.OutboxMessages.AddAsync(outboxMessage, cancellationToken);
+            var outboxMessage = new OutboxMessage
+            {
+                // Id and OccurredOnUtc are set in OutboxMessage constructor
+                Type = orderCreatedEvent.GetType().FullName ?? nameof(OrderCreatedDomainEvent),
+                Payload = JsonSerializer.Serialize(orderCreatedEvent, _jsonSerializerOptions)
+            };
+            _dbContext.OutboxMessages.Add(outboxMessage);
 
-            await _unitOfWork.CompleteAsync(cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
 
-            await _unitOfWork.CommitTransactionAsync(cancellationToken);
+            _logger.LogInformation("Order {OrderId} created successfully for customer {CustomerName}.", order.Id, order.CustomerName);
 
-            _logger.LogInformation(
-                "Transaction committed. Order {OrderId} created for customer {CustomerId} (Email: {CustomerEmail}).",
-                order.OrderId,
-                customer.CustomerId,
-                command.CustomerEmail);
-
-            return order.OrderId;
+            return order.Id;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing CreateOrderCommand for customer email {CustomerEmail}. Rolling back transaction.", command.CustomerEmail);
-            
-            try
-            {
-                await _unitOfWork.RollbackTransactionAsync(cancellationToken);
-                
-                _logger.LogInformation("Transaction rolled back for CreateOrderCommand (CustomerEmail: {CustomerEmail}).", command.CustomerEmail);
-            }
-            catch (Exception rollbackEx)
-            {
-                _logger.LogError(rollbackEx,"An error occurred during transaction rollback for CreateOrderCommand (CustomerEmail: {CustomerEmail}).", command.CustomerEmail);
-                throw new AggregateException(ex, rollbackEx);
-            }
-
-            throw;
+            await transaction.RollbackAsync(cancellationToken);
+            _logger.LogError(ex, "Error creating order for customer {CustomerName}. Details: {ErrorMessage}", command.CustomerName, ex.Message);
+            throw; // Re-throw to allow higher layers (e.g., API) to handle it.
         }
     }
 }

@@ -26,6 +26,7 @@ namespace CQRSSolution.OutboxProcessor.AzureFunctions
         private readonly int _batchSize;
         private readonly int _maxRetries;
 
+        
         /// <summary>
         /// Initializes a new instance of the <see cref="OutboxPollingFunction"/> class.
         /// </summary>

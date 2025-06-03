@@ -4,15 +4,18 @@ using System.Threading.Tasks;
 
 namespace CQRSSolution.Application.Interfaces
 {
+    /// <summary>
+    /// Interface for publishing events to a message bus.
+    /// </summary>
     public interface IEventBusPublisher
     {
         /// <summary>
-        /// Publishes an event to the event bus.
+        /// Publishes an event to the message bus.
         /// </summary>
-        /// <param name="eventData">The event data object.</param>
-        /// <param name="eventTypeFullName">The full name of the event type.</param>
-        /// <param name="messageId">A unique message ID, typically the OutboxMessage.Id, used for bus-level deduplication and correlation.</param>
-        /// <param name="cancellationToken">Cancellation token.</param>
-        Task PublishAsync(object eventData, string eventTypeFullName, Guid messageId, CancellationToken cancellationToken = default);
+        /// <typeparam name="TEvent">The type of the event to publish.</typeparam>
+        /// <param name="event">The event object to publish.</param>
+        /// <param name="cancellationToken">A token to cancel the operation.</param>
+        /// <returns>A task representing the asynchronous publishing operation.</returns>
+        Task PublishAsync<TEvent>(TEvent @event, CancellationToken cancellationToken) where TEvent : class;
     }
 } 

@@ -29,7 +29,6 @@ bld/
 #wwwroot/
 
 # VS Code
-.vscode/
 
 # Rider / IntelliJ
 .idea/

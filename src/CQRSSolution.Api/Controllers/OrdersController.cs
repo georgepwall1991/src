@@ -1,10 +1,13 @@
-
 using CQRSSolution.Application.Commands.CreateOrder;
 using CQRSSolution.Application.DTOs;
 using CQRSSolution.Application.Queries.GetCustomerOrderById;
 using CQRSSolution.Application.Queries.GetCustomerOrdersByStatus;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
+using System;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Http;
 
 namespace CQRSSolution.Api.Controllers;
 
@@ -35,33 +38,44 @@ public class OrdersController : ControllerBase
     /// <summary>
     /// Creates a new order in the system.
     /// </summary>
-    /// <param name="createOrderDto">The order creation request data.</param>
+    /// <param name="command">The command containing order details.</param>
     /// <returns>The ID of the newly created order.</returns>
     /// <response code="201">Returns the newly created order's ID.</response>
-    /// <response code="400">If the request is invalid (e.g., validation errors).</response>
-    /// <response code="500">If an unexpected error occurs on the server.</response>
+    /// <response code="400">If the command is invalid (e.g., validation errors).</response>
+    /// <response code="500">If an unexpected error occurs during processing.</response>
     [HttpPost]
     [ProducesResponseType(typeof(Guid), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-    public async Task<IActionResult> CreateOrder([FromBody] CreateOrderRequestDto createOrderDto)
+    public async Task<IActionResult> CreateOrder([FromBody] CreateOrderCommand command)
     {
-        if (!ModelState.IsValid)
+        if (command == null)
         {
-            _logger.LogWarning("CreateOrder called with invalid model state.");
-            return BadRequest(ModelState);
+            return BadRequest("Command cannot be null.");
         }
+        // Model validation (e.g., [Required] attributes on command) 
+        // is typically handled by ASP.NET Core automatically. 
+        // If (!ModelState.IsValid) return BadRequest(ModelState);
 
         try
         {
-            var orderId = await CreateOrderAsync(createOrderDto);
+            _logger.LogInformation("Attempting to create order for customer: {CustomerName}", command.CustomerName);
+            var orderId = await _mediator.Send(command);
+            _logger.LogInformation("Successfully created order {OrderId} for customer: {CustomerName}", orderId, command.CustomerName);
+            
+            // As per API_DOCUMENTATION.md, return an object with orderId
             return CreatedAtAction(nameof(GetOrderById), new { orderId }, new { orderId });
+        }
+        catch (ArgumentException ex) // Catch specific exceptions from handler if needed for different status codes
+        {
+            _logger.LogWarning(ex, "Invalid argument while creating order for {CustomerName}: {ErrorMessage}", command.CustomerName, ex.Message);
+            return BadRequest(new { type = "Validation", title = "Invalid request data.", detail = ex.Message });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error creating order for customer {CustomerName}.", createOrderDto.CustomerName);
-            
-            return StatusCode(StatusCodes.Status500InternalServerError, "An unexpected error occurred. Please try again later.");
+            _logger.LogError(ex, "An unexpected error occurred while creating order for customer {CustomerName}.", command.CustomerName);
+            // Return a generic error response to avoid leaking sensitive information
+            return StatusCode(StatusCodes.Status500InternalServerError, new { title = "An unexpected error occurred.", detail = "An internal server error prevented the request from being completed." });
         }
     }
 
@@ -154,25 +168,6 @@ public class OrdersController : ControllerBase
                 StatusCodes.Status500InternalServerError, 
                 "An unexpected error occurred while retrieving orders. Please try again later.");
         }
-    }
-
-    /// <summary>
-    /// Creates an order by sending a command through the mediator.
-    /// </summary>
-    /// <param name="requestDto">The order request details.</param>
-    /// <returns>The ID of the newly created order.</returns>
-    private async Task<Guid> CreateOrderAsync(CreateOrderRequestDto requestDto)
-    {
-        var command = new CreateOrderCommand(
-            requestDto.CustomerName, 
-            requestDto.CustomerEmail, 
-            requestDto.Items);
-            
-        var orderId = await _mediator.Send(command);
-        
-        _logger.LogInformation("Order {OrderId} created successfully.", orderId);
-        
-        return orderId;
     }
 
     /// <summary>

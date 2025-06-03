@@ -1,3 +1,10 @@
+using CQRSSolution.Domain.Enums;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+using System.Linq;
+
 namespace CQRSSolution.Domain.Entities;
 
 /// <summary>
@@ -5,12 +12,39 @@ namespace CQRSSolution.Domain.Entities;
 /// </summary>
 public class Order
 {
-    private readonly List<OrderItem> _orderItems = new(); // Backing field
+    /// <summary>
+    ///     Gets or sets the unique identifier for the order.
+    /// </summary>
+    [Key]
+    public Guid Id { get; set; }
 
-    // Private constructor for EF Core
-    private Order()
-    {
-    }
+    /// <summary>
+    ///     Gets or sets the name of the customer who placed the order.
+    /// </summary>
+    [Required]
+    [MaxLength(200)]
+    public string CustomerName { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Gets or sets the date and time when the order was placed.
+    /// </summary>
+    public DateTime OrderDate { get; set; }
+
+    /// <summary>
+    ///     Gets or sets the total amount for the order.
+    /// </summary>
+    [Column(TypeName = "decimal(18,2)")]
+    public decimal TotalAmount { get; set; }
+
+    /// <summary>
+    ///     Gets or sets the current status of the order.
+    /// </summary>
+    public OrderStatus Status { get; set; }
+
+    /// <summary>
+    ///     Gets or sets the collection of items included in this order.
+    /// </summary>
+    public virtual ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="Order" /> class.
@@ -21,18 +55,13 @@ public class Order
     /// <param name="status">The initial status of the order.</param>
     public Order(Guid customerId, string customerName, DateTime orderDate, string status)
     {
-        OrderId = Guid.NewGuid();
+        Id = Guid.NewGuid();
         CustomerId = customerId;
         CustomerName = customerName;
         OrderDate = orderDate;
         Status = status;
         TotalAmount = 0; // Initialized to 0, updated by AddOrderItem
     }
-
-    /// <summary>
-    ///     Gets the unique identifier for the order.
-    /// </summary>
-    public Guid OrderId { get; }
 
     /// <summary>
     ///     Gets the ID of the customer who placed the order.
@@ -45,29 +74,17 @@ public class Order
     public virtual Customer? Customer { get; set; } // Keep setter for EF Core relationship fixup
 
     /// <summary>
-    ///     Gets the name of the customer who placed the order.
+    ///     Initializes a new instance of the <see cref="Order"/> class.
+    ///     Sets default values for new orders.
     /// </summary>
-    public string CustomerName { get; private set; } = string.Empty;
-
-    /// <summary>
-    ///     Gets the date and time when the order was placed.
-    /// </summary>
-    public DateTime OrderDate { get; private set; }
-
-    /// <summary>
-    ///     Gets the total amount of the order.
-    /// </summary>
-    public decimal TotalAmount { get; private set; }
-
-    /// <summary>
-    ///     Gets the status of the order (e.g., Pending, Confirmed, Shipped).
-    /// </summary>
-    public string Status { get; private set; } = string.Empty;
-
-    /// <summary>
-    ///     Gets the collection of items included in this order.
-    /// </summary>
-    public IReadOnlyCollection<OrderItem> OrderItems => _orderItems.AsReadOnly();
+    public Order()
+    {
+        Id = Guid.NewGuid();
+        OrderDate = DateTime.UtcNow;
+        Status = OrderStatus.Pending; // Use Enum directly
+        OrderItems = new List<OrderItem>();
+        CustomerName = string.Empty; // Initialize to prevent null reference
+    }
 
     /// <summary>
     ///     Adds an item to the order and updates the total amount.
@@ -85,20 +102,25 @@ public class Order
         if (unitPrice < 0)
             throw new ArgumentException("Unit price cannot be negative.", nameof(unitPrice));
 
-        var orderItem = new OrderItem(OrderId, productName, quantity, unitPrice);
-        _orderItems.Add(orderItem);
-        TotalAmount += orderItem.Quantity * orderItem.UnitPrice;
+        var orderItem = new OrderItem(Id, productName, quantity, unitPrice);
+        OrderItems.Add(orderItem);
+        RecalculateTotalAmount();
+    }
+
+    /// <summary>
+    ///     Recalculates the total amount of the order based on its items.
+    /// </summary>
+    public void RecalculateTotalAmount()
+    {
+        TotalAmount = OrderItems.Sum(item => item.Quantity * item.UnitPrice);
     }
 
     /// <summary>
     ///     Updates the status of the order.
     /// </summary>
     /// <param name="newStatus">The new status.</param>
-    /// <exception cref="ArgumentException">Thrown if newStatus is null or whitespace.</exception>
-    public void UpdateStatus(string newStatus)
+    public void UpdateStatus(OrderStatus newStatus)
     {
-        if (string.IsNullOrWhiteSpace(newStatus))
-            throw new ArgumentException("Status cannot be empty.", nameof(newStatus));
         Status = newStatus;
     }
 }

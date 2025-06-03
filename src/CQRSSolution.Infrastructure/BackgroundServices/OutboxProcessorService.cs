@@ -4,135 +4,172 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-// For IEventBusPublisher
-// For IServiceScopeFactory
-// For IHostedService
-// For ILogger
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Linq;
+using System.Reflection;
 
 namespace CQRSSolution.Infrastructure.BackgroundServices;
 
 /// <summary>
 ///     Background service that periodically processes messages from the outbox.
 /// </summary>
-public class OutboxProcessorService : IHostedService, IDisposable
+public class OutboxProcessorService : BackgroundService
 {
     // Configuration for the outbox processor (can be moved to appsettings.json)
     private const int PollingIntervalSeconds = 10; // How often to poll
     private const int MaxMessagesToProcessPerCycle = 20; // Max messages to grab in one go
     private const int MaxRetryAttempts = 3; // Max times to retry a message before marking as failed
 
-    private readonly IEventBusPublisher _eventBusPublisher;
-
+    private readonly ILogger<OutboxProcessorService> _logger;
+    private readonly IServiceProvider _serviceProvider;
+    private readonly TimeSpan _pollingInterval = TimeSpan.FromSeconds(PollingIntervalSeconds); // Configurable
+    private readonly int _batchSize = MaxMessagesToProcessPerCycle; // Configurable
     private readonly JsonSerializerOptions _jsonSerializerOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         // Add any other necessary deserialization options here
     };
 
-    private readonly ILogger<OutboxProcessorService> _logger;
-    private readonly IServiceScopeFactory _scopeFactory;
-    private Timer? _timer;
-
-    public OutboxProcessorService(ILogger<OutboxProcessorService> logger, IServiceScopeFactory scopeFactory,
-        IEventBusPublisher eventBusPublisher)
+    public OutboxProcessorService(ILogger<OutboxProcessorService> logger, IServiceProvider serviceProvider)
     {
-        _logger = logger;
-        _scopeFactory = scopeFactory;
-        _eventBusPublisher = eventBusPublisher;
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
     }
 
-    public void Dispose()
-    {
-        _timer?.Dispose();
-        GC.SuppressFinalize(this);
-    }
-
-    public Task StartAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// This method is called when the <see cref="IHostedService"/> starts.
+    /// The implementation should return a task that represents the lifetime of the long running operation(s) being performed.
+    /// </summary>
+    /// <param name="stoppingToken">Triggered when <see cref="IHostedService.StopAsync(CancellationToken)"/> is called.</param>
+    /// <returns>A <see cref="Task"/> that represents the long running operations.</returns>
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Outbox Processor Service is starting.");
-        _timer = new Timer(DoWork, null, TimeSpan.Zero, TimeSpan.FromSeconds(PollingIntervalSeconds));
-        return Task.CompletedTask;
-    }
 
-    public Task StopAsync(CancellationToken cancellationToken)
-    {
-        _logger.LogInformation("Outbox Processor Service is stopping.");
-        _timer?.Change(Timeout.Infinite, 0);
-        return Task.CompletedTask;
-    }
+        stoppingToken.Register(() => _logger.LogInformation("Outbox Processor Service is stopping."));
 
-    private void DoWork(object? state)
-    {
-        _logger.LogInformation("Outbox Processor Service is working. Polling for messages...");
-        ProcessOutboxMessagesAsync(CancellationToken.None).ConfigureAwait(false).GetAwaiter().GetResult();
-    }
-
-    private async Task ProcessOutboxMessagesAsync(CancellationToken stoppingToken)
-    {
-        _logger.LogInformation("OutboxProcessorService is processing messages.");
-
-        using var scope = _scopeFactory.CreateScope();
-        var dbContext =
-            scope.ServiceProvider.GetRequiredService<IApplicationDbContext>(); // Changed from ApplicationDbContext
-        var domainEventDeserializer = scope.ServiceProvider.GetRequiredService<DomainEventDeserializer>();
-
-        var messagesToProcess = await dbContext.OutboxMessages
-            .Where(m => m.ProcessedOnUtc == null && m.Error == null) // Added Error check
-            .OrderBy(m => m.OccurredOnUtc)
-            .Take(20) // Process in batches
-            .ToListAsync(stoppingToken);
-
-        foreach (var message in messagesToProcess)
+        while (!stoppingToken.IsCancellationRequested)
         {
-            _logger.LogInformation("Processing outbox message {MessageId} of type {MessageType}.", message.Id,
-                message.Type);
             try
             {
-                var domainEvent = domainEventDeserializer.Deserialize(message.Type, message.Payload);
-
-                if (domainEvent == null)
-                {
-                    _logger.LogError(
-                        "Could not deserialize event type {EventType} for OutboxMessage {OutboxMessageId}. Payload: {Payload}",
-                        message.Type, message.Id, message.Payload);
-                    message.Error = "Deserialization failed"; // Mark as error
-                    message.ProcessedOnUtc = DateTime.UtcNow; // Consider it processed to avoid retrying indefinitely 
-                    await dbContext.SaveChangesAsync(stoppingToken);
-                    continue;
-                }
-
-                await _eventBusPublisher.PublishAsync(message.Payload, message.Type, message.Id, stoppingToken);
-                message.ProcessedOnUtc = DateTime.UtcNow;
-                message.Error = null; // Clear any previous error
+                await ProcessOutboxMessagesAsync(stoppingToken);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing outbox message {MessageId} of type {MessageType}.", message.Id,
-                    message.Type);
-                message.Error = ex.Message; // Store error message
-                // Implement retry logic here if desired before marking as permanently failed
-                // For simplicity, we'll just mark with error for now. A retry count could be added to OutboxMessage.
+                _logger.LogError(ex, "An unexpected error occurred in Outbox Processor Service execution loop.");
+                // Consider a longer delay here if errors are persistent to avoid tight loop of failures
             }
-            finally
+            await Task.Delay(_pollingInterval, stoppingToken); 
+        }
+        _logger.LogInformation("Outbox Processor Service has stopped.");
+    }
+
+    private async Task ProcessOutboxMessagesAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogDebug("Polling for outbox messages...");
+
+        // Create a scope to resolve scoped services
+        using var scope = _serviceProvider.CreateScope();
+        var outboxRepository = scope.ServiceProvider.GetRequiredService<IOutboxMessageRepository>();
+        var eventBusPublisher = scope.ServiceProvider.GetRequiredService<IEventBusPublisher>();
+        var dbContext = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>(); // For SaveChangesAsync
+
+        var messages = await outboxRepository.GetUnprocessedMessagesAsync(_batchSize, cancellationToken);
+
+        if (!messages.Any())
+        {
+            _logger.LogDebug("No unprocessed outbox messages found.");
+            return;
+        }
+
+        _logger.LogInformation("Found {MessageCount} unprocessed outbox messages to process.", messages.Count);
+
+        foreach (var message in messages)
+        {
+            if (cancellationToken.IsCancellationRequested) break;
+
+            object? deserializedEvent = null;
+            try
             {
-                // Always save changes to the message (ProcessedOnUtc or Error)
-                // This needs to be outside a transaction that might roll back if PublishAsync fails but we still want to record the attempt/error.
-                // However, if PublishAsync itself is part of a larger distributed transaction, this logic would be more complex.
-                // For a simple outbox, updating the message state after attempting to publish is common.
+                // Attempt to deserialize the event payload
+                Type? eventType = FindType(message.Type);
+                if (eventType == null)
+                {
+                    _logger.LogError("Could not find type {EventType} for outbox message {MessageId}. Skipping.", message.Type, message.Id);
+                    message.Error = $"Type {message.Type} not found.";
+                    // Optionally mark as processed if it's an unrecoverable type issue, or leave for manual inspection
+                    // message.ProcessedOnUtc = DateTime.UtcNow; 
+                }
+                else
+                {
+                    deserializedEvent = JsonSerializer.Deserialize(message.Payload, eventType, _jsonSerializerOptions);
+                    if (deserializedEvent == null)
+                    {
+                        _logger.LogError("Failed to deserialize payload for outbox message {MessageId} of type {EventType}. Payload: {Payload}", message.Id, message.Type, message.Payload);
+                        message.Error = "Failed to deserialize payload.";
+                    }
+                }
+            }
+            catch (JsonException jsonEx)
+            {
+                _logger.LogError(jsonEx, "JSON Deserialization error for outbox message {MessageId} of type {EventType}. Payload: {Payload}", message.Id, message.Type, message.Payload);
+                message.Error = "JSON Deserialization error: " + jsonEx.Message;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error during deserialization for outbox message {MessageId} of type {EventType}.", message.Id, message.Type);
+                message.Error = "Unexpected deserialization error: " + ex.Message;
+            }
+
+            if (deserializedEvent != null)
+            {
                 try
                 {
-                    await dbContext.SaveChangesAsync(stoppingToken);
+                    _logger.LogInformation("Publishing event of type {EventType} from outbox message {MessageId}.", message.Type, message.Id);
+                    await eventBusPublisher.PublishAsync(deserializedEvent, cancellationToken);
+                    message.ProcessedOnUtc = DateTime.UtcNow;
+                    message.Error = null; // Clear previous errors if any
+                    _logger.LogInformation("Successfully published event from outbox message {MessageId} and marked as processed.", message.Id);
                 }
-                catch (Exception dbEx)
+                catch (Exception ex)
                 {
-                    _logger.LogError(dbEx,
-                        "Failed to save state changes for outbox message {MessageId} after processing attempt.",
-                        message.Id);
+                    // Handle transient or persistent errors from event bus publisher
+                    _logger.LogError(ex, "Error publishing event from outbox message {MessageId} of type {EventType}.", message.Id, message.Type);
+                    message.Error = "Publishing error: " + ex.Message;
+                    // Implement retry logic or dead-lettering if necessary for the event bus publisher itself.
+                    // For now, we'll update the message with the error and it will be retried later.
                 }
             }
+            
+            // Update the outbox message (e.g., set ProcessedOnUtc or Error)
+            await outboxRepository.UpdateAsync(message, cancellationToken);
         }
+        
+        // Save all changes made to outbox messages in this batch
+        await dbContext.SaveChangesAsync(cancellationToken);
+        _logger.LogInformation("Finished processing batch of {MessageCount} outbox messages.", messages.Count);
+    }
+
+    private static Type? FindType(string typeName)
+    {
+        // A more robust type resolution mechanism might be needed, 
+        // especially if events are in different assemblies.
+        // This simple version searches loaded assemblies.
+        var type = Type.GetType(typeName);
+        if (type != null) return type;
+
+        foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            type = a.GetType(typeName);
+            if (type != null)
+                return type;
+        }
+        return null;
     }
 }
 
 // Placeholder/Mock implementation for IEventBusPublisher
+// This would typically be in its own file and could be an AzureServiceBusPublisher, RabbitMQPublisher, etc.
 // This would typically be in its own file and could be an AzureServiceBusPublisher, RabbitMQPublisher, etc.
